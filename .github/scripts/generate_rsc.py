@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import os
 import csv
+import re
 import requests
 from datetime import datetime
 
@@ -37,7 +38,7 @@ def fetch_china_ip_list():
 
 def load_asn_database():
     """从as.txt加载ASN数据库"""
-    asn_db = []
+    asn_db = {}
     if not os.path.exists('as.txt'):
         print("Warning: as.txt file not found")
         return asn_db
@@ -49,20 +50,22 @@ def load_asn_database():
                 if len(row) >= 3:
                     asn = row[0].strip()
                     company = row[2].strip().replace('"', '')
-                    asn_db.append((asn, company.lower()))
-        print(f"Loaded {len(asn_db)} ASN entries from as.txt")
+                    asn_db[asn] = company
+                    # 同时存储小写的公司名称，用于关键字搜索
+                    asn_db[f"name_{asn}"] = company.lower()
+        print(f"Loaded {len(asn_db) // 2} ASN entries from as.txt")
         return asn_db
     except Exception as e:
         print(f"Error loading ASN database: {e}")
-        return []
+        return {}
 
 def find_matching_asns(keyword, asn_db):
     """根据关键字查找匹配的ASN"""
     matching_asns = []
     keyword_lower = keyword.lower()
     
-    for asn, company in asn_db:
-        if keyword_lower in company:
+    for asn, company_lower in [(k.replace("name_", ""), v) for k, v in asn_db.items() if k.startswith("name_")]:
+        if keyword_lower in company_lower:
             matching_asns.append(asn)
     
     return matching_asns
@@ -96,7 +99,7 @@ def generate_rsc_file():
         
         entry_count = 0
         excluded_count = 0
-        processed_keywords = []
+        processed_items = []
         
         with open('rule.list', 'r') as f:
             print("Reading rule.list file")
@@ -106,51 +109,104 @@ def generate_rsc_file():
                 if not line or line.startswith('#'):
                     continue
                 
-                # 提取关键字
-                keyword = line.strip()
-                if keyword in processed_keywords:
-                    print(f"Skipping duplicate keyword: {keyword}")
-                    continue
+                # 检查是否为纯数字（ASN）
+                is_asn = line.isdigit()
                 
-                processed_keywords.append(keyword)
-                print(f"Processing keyword: {keyword}")
-                
-                # 查找匹配的ASN
-                matching_asns = find_matching_asns(keyword, asn_db)
-                
-                if not matching_asns:
-                    print(f"No matching ASNs found for keyword: {keyword}")
-                    continue
-                
-                print(f"Found {len(matching_asns)} matching ASNs for keyword {keyword}: {', '.join(matching_asns)}")
-                
-                # 收集所有匹配ASN的IP，并排除中国IP
-                all_ips = []
-                for asn in matching_asns:
+                if is_asn:
+                    # 直接作为ASN处理
+                    asn = line
+                    if asn in processed_items:
+                        print(f"Skipping duplicate ASN: {asn}")
+                        continue
+                    
+                    processed_items.append(asn)
+                    
+                    # 获取ASN对应的公司名称作为列表名
+                    if asn in asn_db:
+                        company_name = asn_db[asn]
+                        # 从公司名中提取简短名称作为列表名
+                        list_name = re.sub(r'[^a-zA-Z0-9]', '_', company_name)
+                        list_name = re.sub(r'_+', '_', list_name)  # 替换多个连续下划线为单个
+                        list_name = list_name.strip('_')[:30]  # 限制长度
+                        
+                        # 如果提取出的列表名为空，则使用ASN作为列表名
+                        if not list_name:
+                            list_name = f"ASN{asn}"
+                    else:
+                        # 如果在数据库中找不到，则使用ASN作为列表名
+                        list_name = f"ASN{asn}"
+                        print(f"ASN {asn} not found in database, using ASN{asn} as list name")
+                    
+                    print(f"Processing ASN {asn} for list {list_name}")
+                    
+                    # 获取ASN的IP列表
                     ips = fetch_ip_list(asn)
+                    filtered_ips = []
+                    
                     if ips:
                         for ip in ips:
                             # 排除与中国IP完全一致的条目
                             if ip in china_ips:
                                 excluded_count += 1
                             else:
-                                all_ips.append(ip)
+                                filtered_ips.append(ip)
                         
-                        print(f"Added {len(ips)} IPs from ASN {asn} (excluded {excluded_count} China IPs)")
+                        print(f"Added {len(filtered_ips)} IPs from ASN {asn} (excluded {excluded_count} China IPs)")
                     else:
                         print(f"No IPs found for ASN {asn}")
-                
-                # 添加到RSC内容
-                if all_ips:
-                    # 移除重复的IP
-                    unique_ips = list(set(all_ips))
-                    print(f"Adding {len(unique_ips)} unique IPs to list {keyword}")
                     
-                    for ip in unique_ips:
-                        rsc_content.append(f"add address={ip} list={keyword}")
-                        entry_count += 1
+                    # 添加到RSC内容
+                    if filtered_ips:
+                        for ip in filtered_ips:
+                            rsc_content.append(f"add address={ip} list={list_name}")
+                            entry_count += 1
+                
                 else:
-                    print(f"No IPs found for keyword {keyword}")
+                    # 作为关键字处理
+                    keyword = line
+                    if keyword in processed_items:
+                        print(f"Skipping duplicate keyword: {keyword}")
+                        continue
+                    
+                    processed_items.append(keyword)
+                    print(f"Processing keyword: {keyword}")
+                    
+                    # 查找匹配的ASN
+                    matching_asns = find_matching_asns(keyword, asn_db)
+                    
+                    if not matching_asns:
+                        print(f"No matching ASNs found for keyword: {keyword}")
+                        continue
+                    
+                    print(f"Found {len(matching_asns)} matching ASNs for keyword {keyword}: {', '.join(matching_asns)}")
+                    
+                    # 收集所有匹配ASN的IP，并排除中国IP
+                    all_ips = []
+                    for asn in matching_asns:
+                        ips = fetch_ip_list(asn)
+                        if ips:
+                            for ip in ips:
+                                # 排除与中国IP完全一致的条目
+                                if ip in china_ips:
+                                    excluded_count += 1
+                                else:
+                                    all_ips.append(ip)
+                            
+                            print(f"Added IPs from ASN {asn}")
+                        else:
+                            print(f"No IPs found for ASN {asn}")
+                    
+                    # 添加到RSC内容
+                    if all_ips:
+                        # 移除重复的IP
+                        unique_ips = list(set(all_ips))
+                        print(f"Adding {len(unique_ips)} unique IPs to list {keyword}")
+                        
+                        for ip in unique_ips:
+                            rsc_content.append(f"add address={ip} list={keyword}")
+                            entry_count += 1
+                    else:
+                        print(f"No IPs found for keyword {keyword}")
         
         if entry_count == 0:
             print("Warning: No entries were added to the RSC file")
