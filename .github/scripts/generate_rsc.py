@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import os
 import csv
+import re
 import requests
 from datetime import datetime
 
@@ -20,6 +21,38 @@ def fetch_ip_list(asn):
         print(f"Error fetching IP list for ASN {asn}: {e}")
         return []
 
+def load_asn_database():
+    """从as.txt加载ASN数据库"""
+    asn_db = []
+    if not os.path.exists('as.txt'):
+        print("Warning: as.txt file not found")
+        return asn_db
+    
+    try:
+        with open('as.txt', 'r') as f:
+            csv_reader = csv.reader(f)
+            for row in csv_reader:
+                if len(row) >= 3:
+                    asn = row[0].strip()
+                    company = row[2].strip().replace('"', '')
+                    asn_db.append((asn, company.lower()))
+        print(f"Loaded {len(asn_db)} ASN entries from as.txt")
+        return asn_db
+    except Exception as e:
+        print(f"Error loading ASN database: {e}")
+        return []
+
+def find_matching_asns(keyword, asn_db):
+    """根据关键字查找匹配的ASN"""
+    matching_asns = []
+    keyword_lower = keyword.lower()
+    
+    for asn, company in asn_db:
+        if keyword_lower in company:
+            matching_asns.append(asn)
+    
+    return matching_asns
+
 def generate_rsc_file():
     """生成Mikrotik RSC文件"""
     if not os.path.exists('rule.list'):
@@ -36,32 +69,65 @@ def generate_rsc_file():
             "/ip firewall address-list"
         ]
         
+        # 加载ASN数据库
+        asn_db = load_asn_database()
+        if not asn_db:
+            print("Error: Failed to load ASN database")
+            return False
+        
         entry_count = 0
+        processed_keywords = []
+        
         with open('rule.list', 'r') as f:
             print("Reading rule.list file")
-            csv_reader = csv.reader(f)
-            for row in csv_reader:
-                if len(row) >= 2:
-                    asn = row[0].strip()
-                    list_name = row[1].strip().replace('"', '')
-                    
-                    # 修改后的格式: 将ASN号移到名称后面
-                    list_name_with_asn = f"{list_name}_{asn}"
-                    
-                    print(f"Processing ASN {asn} for list {list_name_with_asn}")
-                    ip_list = fetch_ip_list(asn)
-                    
-                    if ip_list:
-                        for ip in ip_list:
-                            # 去掉comment参数
-                            rsc_content.append(f"add address={ip} list={list_name_with_asn}")
-                            entry_count += 1
+            for line in f:
+                # 忽略空行和注释行
+                line = line.strip()
+                if not line or line.startswith('#'):
+                    continue
+                
+                # 提取关键字
+                keyword = line.strip()
+                if keyword in processed_keywords:
+                    print(f"Skipping duplicate keyword: {keyword}")
+                    continue
+                
+                processed_keywords.append(keyword)
+                print(f"Processing keyword: {keyword}")
+                
+                # 查找匹配的ASN
+                matching_asns = find_matching_asns(keyword, asn_db)
+                
+                if not matching_asns:
+                    print(f"No matching ASNs found for keyword: {keyword}")
+                    continue
+                
+                print(f"Found {len(matching_asns)} matching ASNs for keyword {keyword}: {', '.join(matching_asns)}")
+                
+                # 收集所有匹配ASN的IP
+                all_ips = []
+                for asn in matching_asns:
+                    ips = fetch_ip_list(asn)
+                    if ips:
+                        all_ips.extend(ips)
+                        print(f"Added {len(ips)} IPs from ASN {asn}")
                     else:
                         print(f"No IPs found for ASN {asn}")
+                
+                # 添加到RSC内容
+                if all_ips:
+                    # 移除重复的IP
+                    unique_ips = list(set(all_ips))
+                    print(f"Adding {len(unique_ips)} unique IPs to list {keyword}")
+                    
+                    for ip in unique_ips:
+                        rsc_content.append(f"add address={ip} list={keyword}")
+                        entry_count += 1
+                else:
+                    print(f"No IPs found for keyword {keyword}")
         
         if entry_count == 0:
             print("Warning: No entries were added to the RSC file")
-            # 即使没有条目，也创建基本的RSC文件框架
         
         with open('asn.rsc', 'w') as f:
             print(f"Writing {len(rsc_content)} lines to asn.rsc")
