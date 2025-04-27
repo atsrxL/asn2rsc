@@ -45,12 +45,16 @@ def generate_rsc_file():
                     asn = row[0].strip()
                     list_name = row[1].strip().replace('"', '')
                     
-                    print(f"Processing ASN {asn} for list {list_name}")
+                    # 修改后的格式: 将ASN号移到名称后面
+                    list_name_with_asn = f"{list_name}_{asn}"
+                    
+                    print(f"Processing ASN {asn} for list {list_name_with_asn}")
                     ip_list = fetch_ip_list(asn)
                     
                     if ip_list:
                         for ip in ip_list:
-                            rsc_content.append(f"add address={ip} list={list_name} comment=\"ASN{asn}\"")
+                            # 去掉comment参数
+                            rsc_content.append(f"add address={ip} list={list_name_with_asn}")
                             entry_count += 1
                     else:
                         print(f"No IPs found for ASN {asn}")
