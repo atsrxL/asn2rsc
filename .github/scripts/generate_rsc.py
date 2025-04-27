@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 import os
 import csv
-import re
 import requests
 from datetime import datetime
 
@@ -20,6 +19,21 @@ def fetch_ip_list(asn):
     except requests.exceptions.RequestException as e:
         print(f"Error fetching IP list for ASN {asn}: {e}")
         return []
+
+def fetch_china_ip_list():
+    """获取中国IP列表"""
+    url = "https://raw.githubusercontent.com/mayaxcn/china-ip-list/master/chnroute.txt"
+    try:
+        print(f"Fetching China IP list from: {url}")
+        response = requests.get(url)
+        response.raise_for_status()
+        # 过滤掉空行
+        ip_list = [line.strip() for line in response.text.split('\n') if line.strip()]
+        print(f"Found {len(ip_list)} China IP ranges")
+        return set(ip_list)  # 使用集合以提高查找效率
+    except requests.exceptions.RequestException as e:
+        print(f"Error fetching China IP list: {e}")
+        return set()
 
 def load_asn_database():
     """从as.txt加载ASN数据库"""
@@ -75,7 +89,13 @@ def generate_rsc_file():
             print("Error: Failed to load ASN database")
             return False
         
+        # 获取中国IP列表
+        china_ips = fetch_china_ip_list()
+        if not china_ips:
+            print("Warning: Failed to fetch China IP list, continuing without exclusion")
+        
         entry_count = 0
+        excluded_count = 0
         processed_keywords = []
         
         with open('rule.list', 'r') as f:
@@ -104,13 +124,19 @@ def generate_rsc_file():
                 
                 print(f"Found {len(matching_asns)} matching ASNs for keyword {keyword}: {', '.join(matching_asns)}")
                 
-                # 收集所有匹配ASN的IP
+                # 收集所有匹配ASN的IP，并排除中国IP
                 all_ips = []
                 for asn in matching_asns:
                     ips = fetch_ip_list(asn)
                     if ips:
-                        all_ips.extend(ips)
-                        print(f"Added {len(ips)} IPs from ASN {asn}")
+                        for ip in ips:
+                            # 排除与中国IP完全一致的条目
+                            if ip in china_ips:
+                                excluded_count += 1
+                            else:
+                                all_ips.append(ip)
+                        
+                        print(f"Added {len(ips)} IPs from ASN {asn} (excluded {excluded_count} China IPs)")
                     else:
                         print(f"No IPs found for ASN {asn}")
                 
@@ -133,10 +159,12 @@ def generate_rsc_file():
             print(f"Writing {len(rsc_content)} lines to asn.rsc")
             f.write('\n'.join(rsc_content))
         
-        print(f"Generated asn.rsc with {entry_count} IP entries")
+        print(f"Generated asn.rsc with {entry_count} IP entries (excluded {excluded_count} China IPs)")
         return True
     except Exception as e:
         print(f"Error generating RSC file: {e}")
+        import traceback
+        traceback.print_exc()
         return False
 
 if __name__ == "__main__":
